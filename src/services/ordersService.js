@@ -1,4 +1,3 @@
-const e = require("express");
 const pool = require("../config/db");
 const { mapIncomingOrder } = require("../utils/orderMapper");
 
@@ -271,13 +270,12 @@ async function createOrder(payload) {
   }
 }
 
-async function getOrders(restaurantId) {
-  if (!restaurantId) {
-    throw createHttpError("restaurantId é obrigatório", 401);
+async function getOrders(restaurantId, isMaster = false) {
+  if (!restaurantId && !isMaster) {
+    throw createHttpError("Usuário sem loja vinculada. Cadastre uma loja e vincule o usuário.", 409);
   }
 
-  const result = await pool.query(
-    `
+  const baseQuery = `
     SELECT
       o.id,
       o.source,
@@ -315,17 +313,18 @@ async function getOrders(restaurantId) {
     LEFT JOIN addresses a ON a.id = o.address_id
     LEFT JOIN payments p ON p.order_id = o.id
     LEFT JOIN order_items oi ON oi.order_id = o.id
-    WHERE o.store_id = $1
     GROUP BY o.id, c.name, c.phone, a.street, a.number, a.city, p.method, p.status, p.paid_amount, p.change_for
     ORDER BY o.created_at DESC
-    `,
-    [restaurantId]
-  );
+    `;
+
+  const result = isMaster
+    ? await pool.query(baseQuery)
+    : await pool.query(`${baseQuery.replace("GROUP BY", "WHERE o.store_id = $1\n    GROUP BY")}`, [restaurantId]);
 
   return result.rows;
 }
 
-async function updateOrderStatus(orderId, status, restaurantId) {
+async function updateOrderStatus(orderId, status, restaurantId, isMaster = false) {
   const allowedStatus = [
     "novo",
     "recebido",
@@ -336,8 +335,8 @@ async function updateOrderStatus(orderId, status, restaurantId) {
     "cancelado"
   ];
 
-  if (!restaurantId) {
-    throw createHttpError("restaurantId é obrigatório", 401);
+  if (!restaurantId && !isMaster) {
+    throw createHttpError("Usuário sem loja vinculada. Cadastre uma loja e vincule o usuário.", 409);
   }
 
   if (!status) {
@@ -348,17 +347,17 @@ async function updateOrderStatus(orderId, status, restaurantId) {
     throw createHttpError("Status inválido");
   }
 
-  const result = await pool.query(
-    `
+  const query = `
     UPDATE orders
     SET status = $1,
         updated_at = CURRENT_TIMESTAMP
     WHERE id = $2
-      AND store_id = $3
     RETURNING id, status, updated_at
-    `,
-    [status, orderId, restaurantId]
-  );
+    `;
+
+  const result = isMaster
+    ? await pool.query(query, [status, orderId])
+    : await pool.query(`${query.replace("RETURNING", "      AND store_id = $3\n    RETURNING")}`, [status, orderId, restaurantId]);
 
   if (result.rows.length === 0) {
     throw createHttpError("Pedido não encontrado", 404);
@@ -370,13 +369,12 @@ async function updateOrderStatus(orderId, status, restaurantId) {
   };
 }
 
-async function getOrderHistory(restaurantId) {
-  if (!restaurantId) {
-    throw createHttpError("restaurantId é obrigatório", 401);
+async function getOrderHistory(restaurantId, isMaster = false) {
+  if (!restaurantId && !isMaster) {
+    throw createHttpError("Usuário sem loja vinculada. Cadastre uma loja e vincule o usuário.", 409);
   }
 
-  const result = await pool.query(
-    `
+  const baseQuery = `
     SELECT
       o.id,
       o.source,
@@ -415,34 +413,35 @@ async function getOrderHistory(restaurantId) {
     LEFT JOIN payments p ON p.order_id = o.id
     LEFT JOIN order_items oi ON oi.order_id = o.id
     WHERE o.status IN ('entregue', 'cancelado')
-      AND o.store_id = $1
     GROUP BY o.id, c.name, c.phone, a.street, a.number, a.city, p.method, p.status, p.paid_amount, p.change_for
     ORDER BY o.created_at DESC
-    `,
-    [restaurantId]
-  );
+    `;
+
+  const result = isMaster
+    ? await pool.query(baseQuery)
+    : await pool.query(`${baseQuery.replace("GROUP BY", "      AND o.store_id = $1\n    GROUP BY")}`, [restaurantId]);
 
   return result.rows;
 }
 
-async function deleteOrder(orderId, restaurantId) {
-  if (!restaurantId) {
-    throw createHttpError("restaurantId é obrigatório", 401);
+async function deleteOrder(orderId, restaurantId, isMaster = false) {
+  if (!restaurantId && !isMaster) {
+    throw createHttpError("Usuário sem loja vinculada. Cadastre uma loja e vincule o usuário.", 409);
   }
 
   if (!orderId) {
     throw createHttpError("ID do pedido é obrigatório");
   }
 
-  const result = await pool.query(
-    `
+  const query = `
     DELETE FROM orders
     WHERE id = $1
-      AND store_id = $2
     RETURNING id
-    `,
-    [orderId, restaurantId]
-  );
+    `;
+
+  const result = isMaster
+    ? await pool.query(query, [orderId])
+    : await pool.query(`${query.replace("RETURNING", "      AND store_id = $2\n    RETURNING")}`, [orderId, restaurantId]);
 
   if (result.rows.length === 0) {
     throw createHttpError("Pedido não encontrado", 404);

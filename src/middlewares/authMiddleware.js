@@ -13,13 +13,15 @@ function authMiddleware(req, res, next) {
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
 
-    if (!payload || !payload.id || !payload.restaurantId) {
+    if (!payload || !payload.id) {
       return res.status(401).json({ error: "Token inválido" });
     }
 
     req.user = {
       id: payload.id,
-      restaurantId: payload.restaurantId
+      role: payload.role || "user",
+      isMaster: payload.role === "master",
+      restaurantId: payload.restaurantId ?? null
     };
 
     next();
