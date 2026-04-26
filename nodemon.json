@@ -1,0 +1,5 @@
+{
+  "watch": ["src"],
+  "ignore": ["baileys_auth_info"],
+  "ext": "js,json"
+}

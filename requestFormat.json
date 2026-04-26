@@ -1,0 +1,45 @@
+{
+    "pedido_id": "PED_0001",
+    "canal": "Whatsapp",
+    "cliente":{
+        "nome":"Tester",
+        "telefone": "27 99999-9999",
+        "endereço":{
+        "rua":"Rua tester",
+        "numero":"123",
+        "Bairro":"Bairro Tester",
+        "Cidade":"Cidade Tester",
+        "Ponto_referencia:":"referentecia tester"
+    }
+},
+  "itens": [
+    {
+      "nome": "X-Burguer",
+      "quantidade": 2,
+      "preco_unitario": 25.9,
+      "observacao": "Sem cebola"
+    },
+    {
+      "nome": "Coca-Cola 2L",
+      "quantidade": 1,
+      "preco_unitario": 12.0,
+      "observacao": ""
+    }
+  ],
+  "pagamento": {
+    "metodo": "pix",
+    "troco_para": 0,
+    "status": "pendente"
+  },
+  "entrega": {
+    "tipo": "delivery",
+    "taxa": 5.0,
+    "status": "aguardando"
+  },
+  "resumo": {
+    "subtotal": 63.8,
+    "total": 68.8
+  },
+  "status_pedido": "novo",
+  "criado_em": "2026-03-23T19:30:00"
+}
