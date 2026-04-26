@@ -30,3 +30,11 @@ git clone ...
 cd projeto
 npm install
 npm run dev
+## Primeiro acesso
+
+Após configurar o banco e iniciar a API, crie um usuário master no ambiente local.
+
+Exemplo de acesso:
+- login: `admin@example.com`
+- senha: `sua_senha_definida_localmente`
+
