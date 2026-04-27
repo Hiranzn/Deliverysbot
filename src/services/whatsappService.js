@@ -2,17 +2,18 @@ const makeWASocket = require("baileys").default;
 const {
   DisconnectReason,
   fetchLatestBaileysVersion,
-  useMultiFileAuthState,
   Browsers
 } = require("baileys");
 const P = require("pino");
 const QRCode = require("qrcode");
-const fs = require("fs").promises;
-const path = require("path");
 const { handleMessage } = require("../flows/chatFlow");
+const {
+  loadSession,
+  saveSession,
+  deleteSession
+} = require("./whatsappSessionStore");
 
 const maxReconnectAttempts = 5;
-const AUTH_BASE_DIR = path.join(process.cwd(), "baileys_auth_info");
 
 const clients = new Map();
 
@@ -23,7 +24,8 @@ function getOrCreateClientState(clientId = "default") {
       status: "disconnected",
       qrBase64: null,
       reconnectAttempts: 0,
-      lastUpdate: new Date().toISOString()
+      lastUpdate: new Date().toISOString(),
+      session: null
     });
   }
 
@@ -47,8 +49,41 @@ function enviarQRCodeFrontend(clientId, qrBase64) {
   client.lastUpdate = new Date().toISOString();
 }
 
-function getClientAuthDir(clientId) {
-  return path.join(AUTH_BASE_DIR, clientId);
+function buildAuthState(clientId, client) {
+  return {
+    creds: client.session.creds,
+    keys: {
+      get: async (type, ids) => {
+        const keyTypeData = client.session.keys?.[type] || {};
+        const data = {};
+
+        for (const id of ids) {
+          if (keyTypeData[id]) {
+            data[id] = keyTypeData[id];
+          }
+        }
+
+        return data;
+      },
+      set: async (data) => {
+        for (const type of Object.keys(data)) {
+          client.session.keys[type] = client.session.keys[type] || {};
+
+          for (const id of Object.keys(data[type])) {
+            const value = data[type][id];
+
+            if (value) {
+              client.session.keys[type][id] = value;
+            } else {
+              delete client.session.keys[type][id];
+            }
+          }
+        }
+
+        await saveSession(clientId, client.session);
+      }
+    }
+  };
 }
 
 async function createSocket(clientId = "default") {
@@ -58,14 +93,13 @@ async function createSocket(clientId = "default") {
     return client.socket;
   }
 
-  await fs.mkdir(getClientAuthDir(clientId), { recursive: true });
+  client.session = await loadSession(clientId);
 
-  const { state, saveCreds } = await useMultiFileAuthState(getClientAuthDir(clientId));
   const { version } = await fetchLatestBaileysVersion();
 
   const socket = makeWASocket({
     version,
-    auth: state,
+    auth: buildAuthState(clientId, client),
     logger: P({ level: "info" }),
     browser: Browsers.ubuntu("Chrome")
   });
@@ -73,7 +107,9 @@ async function createSocket(clientId = "default") {
   client.socket = socket;
   atualizarStatus(clientId, "connecting");
 
-  socket.ev.on("creds.update", saveCreds);
+  socket.ev.on("creds.update", async () => {
+    await saveSession(clientId, client.session);
+  });
 
   socket.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -179,17 +215,15 @@ function getSocket(clientId = "default") {
 
 async function resetWhatsAppAuth(clientId = "default") {
   const client = getOrCreateClientState(clientId);
-  const authDir = getClientAuthDir(clientId);
 
   if (client.socket) {
     client.socket.end();
     client.socket = null;
   }
 
-  if (await fs.stat(authDir).catch(() => null)) {
-    await fs.rm(authDir, { recursive: true, force: true });
-  }
+  await deleteSession(clientId);
 
+  client.session = null;
   atualizarStatus(clientId, "disconnected");
   client.qrBase64 = null;
 
