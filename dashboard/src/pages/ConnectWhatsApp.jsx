@@ -4,7 +4,7 @@ import { getWhatsAppQr, getWhatsAppStatus } from '../api/whatsappApi';
 const POLLING_INTERVAL = 3000;
 
 function ConnectWhatsApp() {
-  const [clientId, setClientId] = useState('default');
+  const [companyId, setCompanyId] = useState('default');
   const [status, setStatus] = useState('disconnected');
   const [qrBase64, setQrBase64] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -18,8 +18,8 @@ function ConnectWhatsApp() {
     }
   };
 
-  const fetchStatus = async (selectedClientId) => {
-    const data = await getWhatsAppStatus(selectedClientId);
+  const fetchStatus = async (selectedCompanyId) => {
+    const data = await getWhatsAppStatus(selectedCompanyId);
     setStatus(data.status);
 
     if (data.connected) {
@@ -29,21 +29,21 @@ function ConnectWhatsApp() {
   };
 
   const handleConnect = async () => {
-    const normalizedClientId = clientId.trim() || 'default';
+    const normalizedCompanyId = companyId.trim() || 'default';
 
     setLoading(true);
     setError('');
 
     try {
-      const data = await getWhatsAppQr(normalizedClientId);
+      const data = await getWhatsAppQr(normalizedCompanyId);
       setStatus(data.status);
       setQrBase64(data.qrBase64 || null);
 
       clearPolling();
       pollRef.current = setInterval(async () => {
         try {
-          await fetchStatus(normalizedClientId);
-          const qrData = await getWhatsAppQr(normalizedClientId);
+          await fetchStatus(normalizedCompanyId);
+          const qrData = await getWhatsAppQr(normalizedCompanyId);
           if (qrData.qrBase64) {
             setQrBase64(qrData.qrBase64);
           }
@@ -74,9 +74,9 @@ function ConnectWhatsApp() {
       <div className="whatsapp-connect-controls">
         <input
           type="text"
-          value={clientId}
-          onChange={(event) => setClientId(event.target.value)}
-          placeholder="ID do cliente (ex: loja-1)"
+          value={companyId}
+          onChange={(event) => setCompanyId(event.target.value)}
+          placeholder="ID da empresa (ex: 1)"
         />
         <button className="button button-primary" onClick={handleConnect} disabled={loading}>
           {loading ? 'Conectando...' : 'Conectar'}

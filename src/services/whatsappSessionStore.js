@@ -3,26 +3,41 @@ const fs = require("fs").promises;
 const path = require("path");
 const pool = require("../config/db");
 
-let tableInitialized = false;
+let schemaInitialized = false;
 let dbAvailable = true;
 
 const FALLBACK_DIR = path.join(process.cwd(), "whatsapp_sessions");
 
-async function ensureSessionsTable() {
-  if (tableInitialized || !dbAvailable) return;
+async function ensureMultiTenantTables() {
+  if (schemaInitialized || !dbAvailable) return;
 
   try {
     await pool.query(`
+      CREATE TABLE IF NOT EXISTS companies (
+        id SERIAL PRIMARY KEY,
+        nome TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS company_id INTEGER`);
+
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS whatsapp_sessions (
-        client_id TEXT PRIMARY KEY,
-        creds JSONB NOT NULL,
-        keys JSONB NOT NULL DEFAULT '{}'::jsonb,
+        id SERIAL PRIMARY KEY,
+        company_id TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'disconnected',
+        session_data JSONB NOT NULL DEFAULT '{}'::jsonb,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
 
-    tableInitialized = true;
+    await pool.query(`ALTER TABLE whatsapp_sessions ADD COLUMN IF NOT EXISTS company_id TEXT`);
+    await pool.query(`ALTER TABLE whatsapp_sessions ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'disconnected'`);
+    await pool.query(`ALTER TABLE whatsapp_sessions ADD COLUMN IF NOT EXISTS session_data JSONB NOT NULL DEFAULT '{}'::jsonb`);
+
+    schemaInitialized = true;
   } catch (error) {
     dbAvailable = false;
     console.warn("Banco indisponível para sessões WhatsApp. Usando fallback em arquivo.", error.code || error.message);
@@ -38,18 +53,19 @@ function deserialize(value) {
   return JSON.parse(JSON.stringify(value), BufferJSON.reviver);
 }
 
-function getFallbackFilePath(clientId) {
-  return path.join(FALLBACK_DIR, `${clientId}.json`);
+function getFallbackFilePath(companyId) {
+  return path.join(FALLBACK_DIR, `${companyId}.json`);
 }
 
-async function loadSessionFromFile(clientId) {
+async function loadSessionFromFile(companyId) {
   await fs.mkdir(FALLBACK_DIR, { recursive: true });
 
-  const filePath = getFallbackFilePath(clientId);
+  const filePath = getFallbackFilePath(companyId);
   const file = await fs.readFile(filePath, "utf8").catch(() => null);
 
   if (!file) {
     return {
+      status: "disconnected",
       creds: initAuthCreds(),
       keys: {}
     };
@@ -58,35 +74,40 @@ async function loadSessionFromFile(clientId) {
   const parsed = JSON.parse(file);
 
   return {
-    creds: deserialize(parsed.creds) || initAuthCreds(),
-    keys: deserialize(parsed.keys) || {}
+    status: parsed.status || "disconnected",
+    creds: deserialize(parsed.sessionData?.creds) || initAuthCreds(),
+    keys: deserialize(parsed.sessionData?.keys) || {}
   };
 }
 
-async function saveSessionToFile(clientId, session) {
+async function saveSessionToFile(companyId, session, status = "disconnected") {
   await fs.mkdir(FALLBACK_DIR, { recursive: true });
-  const filePath = getFallbackFilePath(clientId);
+  const filePath = getFallbackFilePath(companyId);
 
   await fs.writeFile(
     filePath,
     JSON.stringify({
-      creds: serialize(session.creds),
-      keys: serialize(session.keys || {}),
+      companyId,
+      status,
+      sessionData: {
+        creds: serialize(session.creds),
+        keys: serialize(session.keys || {})
+      },
       updatedAt: new Date().toISOString()
     })
   );
 }
 
-async function loadSession(clientId) {
-  await ensureSessionsTable();
+async function loadSession(companyId) {
+  await ensureMultiTenantTables();
 
   if (!dbAvailable) {
-    return loadSessionFromFile(clientId);
+    return loadSessionFromFile(companyId);
   }
 
   const result = await pool.query(
-    `SELECT creds, keys FROM whatsapp_sessions WHERE client_id = $1 LIMIT 1`,
-    [clientId]
+    `SELECT status, session_data FROM whatsapp_sessions WHERE company_id = $1 LIMIT 1`,
+    [String(companyId)]
   ).catch(async (error) => {
     dbAvailable = false;
     console.warn("Falha ao carregar sessão no banco. Usando fallback em arquivo.", error.code || error.message);
@@ -94,11 +115,12 @@ async function loadSession(clientId) {
   });
 
   if (!result) {
-    return loadSessionFromFile(clientId);
+    return loadSessionFromFile(companyId);
   }
 
   if (result.rowCount === 0) {
     return {
+      status: "disconnected",
       creds: initAuthCreds(),
       keys: {}
     };
@@ -107,53 +129,59 @@ async function loadSession(clientId) {
   const row = result.rows[0];
 
   return {
-    creds: deserialize(row.creds) || initAuthCreds(),
-    keys: deserialize(row.keys) || {}
+    status: row.status || "disconnected",
+    creds: deserialize(row.session_data?.creds) || initAuthCreds(),
+    keys: deserialize(row.session_data?.keys) || {}
   };
 }
 
-async function saveSession(clientId, session) {
-  await ensureSessionsTable();
+async function saveSession(companyId, session, status = "disconnected") {
+  await ensureMultiTenantTables();
 
   if (!dbAvailable) {
-    await saveSessionToFile(clientId, session);
+    await saveSessionToFile(companyId, session, status);
     return;
   }
 
-  const saved = await pool.query(
+  await pool.query(
     `
-      INSERT INTO whatsapp_sessions (client_id, creds, keys, updated_at)
-      VALUES ($1, $2::jsonb, $3::jsonb, NOW())
-      ON CONFLICT (client_id)
+      INSERT INTO whatsapp_sessions (company_id, status, session_data, updated_at)
+      VALUES ($1, $2, $3::jsonb, NOW())
+      ON CONFLICT (company_id)
       DO UPDATE SET
-        creds = EXCLUDED.creds,
-        keys = EXCLUDED.keys,
+        status = EXCLUDED.status,
+        session_data = EXCLUDED.session_data,
         updated_at = NOW()
     `,
-    [clientId, JSON.stringify(serialize(session.creds)), JSON.stringify(serialize(session.keys || {}))]
+    [
+      String(companyId),
+      status,
+      JSON.stringify({
+        creds: serialize(session.creds),
+        keys: serialize(session.keys || {})
+      })
+    ]
   ).catch(async (error) => {
     dbAvailable = false;
     console.warn("Falha ao salvar sessão no banco. Usando fallback em arquivo.", error.code || error.message);
-    await saveSessionToFile(clientId, session);
-    return null;
+    await saveSessionToFile(companyId, session, status);
   });
-
-  if (!saved) return;
 }
 
-async function deleteSession(clientId) {
-  await ensureSessionsTable();
+async function deleteSession(companyId) {
+  await ensureMultiTenantTables();
 
   if (dbAvailable) {
-    await pool.query(`DELETE FROM whatsapp_sessions WHERE client_id = $1`, [clientId]).catch(() => null);
+    await pool.query(`DELETE FROM whatsapp_sessions WHERE company_id = $1`, [String(companyId)]).catch(() => null);
   }
 
-  const filePath = getFallbackFilePath(clientId);
+  const filePath = getFallbackFilePath(companyId);
   await fs.rm(filePath, { force: true }).catch(() => null);
 }
 
 module.exports = {
   loadSession,
   saveSession,
-  deleteSession
+  deleteSession,
+  ensureMultiTenantTables
 };

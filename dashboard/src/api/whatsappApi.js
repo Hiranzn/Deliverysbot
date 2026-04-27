@@ -15,21 +15,21 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-export const getWhatsAppQr = async (clientId = 'default') => {
+export const getWhatsAppQr = async (companyId = 'default') => {
   const response = await api.get('/whatsapp/qr', {
-    params: { clientId },
+    params: { companyId },
   });
   return response.data;
 };
 
-export const getWhatsAppStatus = async (clientId = 'default') => {
+export const getWhatsAppStatus = async (companyId = 'default') => {
   const response = await api.get('/whatsapp/status', {
-    params: { clientId },
+    params: { companyId },
   });
   return response.data;
 };
 
-export const reconnectWhatsApp = async (clientId = 'default') => {
-  const response = await api.post('/whatsapp/reconnect', { clientId });
+export const reconnectWhatsApp = async (companyId = 'default') => {
+  const response = await api.post('/whatsapp/reconnect', { companyId });
   return response.data;
 };
