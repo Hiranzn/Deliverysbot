@@ -29,19 +29,21 @@ function ConnectWhatsApp() {
   };
 
   const handleConnect = async () => {
+    const normalizedClientId = clientId.trim() || 'default';
+
     setLoading(true);
     setError('');
 
     try {
-      const data = await getWhatsAppQr(clientId);
+      const data = await getWhatsAppQr(normalizedClientId);
       setStatus(data.status);
       setQrBase64(data.qrBase64 || null);
 
       clearPolling();
       pollRef.current = setInterval(async () => {
         try {
-          await fetchStatus(clientId);
-          const qrData = await getWhatsAppQr(clientId);
+          await fetchStatus(normalizedClientId);
+          const qrData = await getWhatsAppQr(normalizedClientId);
           if (qrData.qrBase64) {
             setQrBase64(qrData.qrBase64);
           }
@@ -73,7 +75,7 @@ function ConnectWhatsApp() {
         <input
           type="text"
           value={clientId}
-          onChange={(event) => setClientId(event.target.value.trim() || 'default')}
+          onChange={(event) => setClientId(event.target.value)}
           placeholder="ID do cliente (ex: loja-1)"
         />
         <button className="button button-primary" onClick={handleConnect} disabled={loading}>
