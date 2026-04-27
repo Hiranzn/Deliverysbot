@@ -6,135 +6,210 @@ const {
   Browsers
 } = require("baileys");
 const P = require("pino");
-const QRCode = require ("qrcode");
+const QRCode = require("qrcode");
 const fs = require("fs").promises;
 const path = require("path");
-const ordersService = require("./ordersService");
-const {handleMessage} = require("../flows/chatFlow");
+const { handleMessage } = require("../flows/chatFlow");
 
-let reconnectAttempts = 0;
 const maxReconnectAttempts = 5;
-let sock = null;
+const AUTH_BASE_DIR = path.join(process.cwd(), "baileys_auth_info");
 
-async function startWhatsApp() {
-  const { state, saveCreds } = await useMultiFileAuthState("baileys_auth_info");
+const clients = new Map();
+
+function getOrCreateClientState(clientId = "default") {
+  if (!clients.has(clientId)) {
+    clients.set(clientId, {
+      socket: null,
+      status: "disconnected",
+      qrBase64: null,
+      reconnectAttempts: 0,
+      lastUpdate: new Date().toISOString()
+    });
+  }
+
+  return clients.get(clientId);
+}
+
+function atualizarStatus(clientId, status) {
+  const client = getOrCreateClientState(clientId);
+  client.status = status;
+  client.lastUpdate = new Date().toISOString();
+
+  if (status === "connected") {
+    client.qrBase64 = null;
+    client.reconnectAttempts = 0;
+  }
+}
+
+function enviarQRCodeFrontend(clientId, qrBase64) {
+  const client = getOrCreateClientState(clientId);
+  client.qrBase64 = qrBase64;
+  client.lastUpdate = new Date().toISOString();
+}
+
+function getClientAuthDir(clientId) {
+  return path.join(AUTH_BASE_DIR, clientId);
+}
+
+async function createSocket(clientId = "default") {
+  const client = getOrCreateClientState(clientId);
+
+  if (client.socket) {
+    return client.socket;
+  }
+
+  await fs.mkdir(getClientAuthDir(clientId), { recursive: true });
+
+  const { state, saveCreds } = await useMultiFileAuthState(getClientAuthDir(clientId));
   const { version } = await fetchLatestBaileysVersion();
 
-  sock = makeWASocket({
+  const socket = makeWASocket({
     version,
     auth: state,
     logger: P({ level: "info" }),
     browser: Browsers.ubuntu("Chrome")
   });
 
-  sock.ev.on("creds.update", saveCreds);
+  client.socket = socket;
+  atualizarStatus(clientId, "connecting");
 
-  sock.ev.on("connection.update", async (update) => {
+  socket.ev.on("creds.update", saveCreds);
+
+  socket.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      //console.clear();
-      console.log("Escaneie o QR Code com o WhatsApp: \n");
-      console.log(await QRCode.toString(qr, {type: "terminal", small:true}));
+      const qrBase64 = await QRCode.toDataURL(qr);
+      enviarQRCodeFrontend(clientId, qrBase64);
+      atualizarStatus(clientId, "qr_ready");
     }
 
     if (connection === "open") {
-      console.log("WhatsApp conectado com sucesso.");
-      reconnectAttempts = 0; // Reset on successful connection
+      atualizarStatus(clientId, "connected");
+      console.log(`WhatsApp conectado com sucesso para cliente ${clientId}.`);
+      return;
     }
 
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      const currentClient = getOrCreateClientState(clientId);
 
-      console.log("Conexão WhatsApp fechada:", statusCode);
+      currentClient.socket = null;
 
-      if (shouldReconnect && reconnectAttempts < maxReconnectAttempts) {
-        reconnectAttempts++;
-        const delay = Math.min(3000 * Math.pow(2, reconnectAttempts - 1), 30000); // Exponential backoff, max 30s
-        console.log(`Reconectando em ${delay / 1000} segundos... (Tentativa ${reconnectAttempts}/${maxReconnectAttempts})`);
-        setTimeout(() => startWhatsApp(), delay);
-      } else if (shouldReconnect) {
-        console.log("Máximo de tentativas de reconexão atingido. Verifique a conexão.");
+      console.log(`Conexão WhatsApp fechada para cliente ${clientId}:`, statusCode);
+
+      if (shouldReconnect && currentClient.reconnectAttempts < maxReconnectAttempts) {
+        currentClient.reconnectAttempts += 1;
+        atualizarStatus(clientId, "reconnecting");
+
+        const delay = Math.min(3000 * Math.pow(2, currentClient.reconnectAttempts - 1), 30000);
+        setTimeout(() => {
+          createSocket(clientId).catch((error) => {
+            console.error(`Erro ao reconectar cliente ${clientId}:`, error);
+          });
+        }, delay);
       } else {
-        console.log("Sessão deslogada. Será necessário conectar novamente.");
-        reconnectAttempts = 0;
+        atualizarStatus(clientId, "disconnected");
       }
     }
   });
 
-  console.log("Registrando listener de mensagens...");
-    sock.ev.on("messages.upsert", async ({ messages, type }) => {
-        console.log("Event type:", type);
-        if (type !== "notify") return;
+  socket.ev.on("messages.upsert", async ({ messages, type }) => {
+    if (type !== "notify") return;
 
-        const promises = messages.map(async (msg) => {
-            try {
-                const remoteJid = msg.key?.remoteJid || "";
+    const promises = messages.map(async (msg) => {
+      try {
+        const remoteJid = msg.key?.remoteJid || "";
 
-                if (!msg.message) return;
-                if (msg.key.fromMe) return;
-                if (remoteJid === "status@broadcast" || remoteJid.endsWith("@broadcast")) return;
-                if (msg.message.protocolMessage) return;
-                if (msg.message?.senderKeyDistributionMessage) return;
+        if (!msg.message) return;
+        if (msg.key.fromMe) return;
+        if (remoteJid === "status@broadcast" || remoteJid.endsWith("@broadcast")) return;
+        if (msg.message.protocolMessage) return;
+        if (msg.message?.senderKeyDistributionMessage) return;
 
-                await handleMessage(sock, msg);
-            } catch (error) {
-                console.error("Erro ao processar mensagem:", error);
-            }
-        });
-
-        await Promise.all(promises);
+        await handleMessage(socket, msg);
+      } catch (error) {
+        console.error("Erro ao processar mensagem:", error);
+      }
     });
 
-  return sock;
+    await Promise.all(promises);
+  });
+
+  return socket;
 }
 
-function getSocket() {
-  return sock;
+async function startWhatsApp(clientId = "default") {
+  return createSocket(clientId);
 }
 
-async function resetWhatsAppAuth() {
-  try {
-    const authDir = path.join(process.cwd(), "baileys_auth_info");
-    
-    if (await fs.stat(authDir).catch(() => null)) {
-      await fs.rm(authDir, { recursive: true, force: true });
-      console.log("Credenciais do WhatsApp limpas com sucesso.");
-    }
-    
-    if (sock) {
-      sock.end();
-      sock = null;
-      console.log("Socket WhatsApp encerrado.");
-    }
-    
-    return { message: "Autenticação resetada. Inicie o servidor para gerar novo QR code." };
-  } catch (error) {
-    console.error("Erro ao resetar autenticação:", error);
-    throw error;
+async function gerarQRCode(clientId = "default") {
+  const client = getOrCreateClientState(clientId);
+
+  if (!client.socket) {
+    await createSocket(clientId);
   }
+
+  return {
+    clientId,
+    status: client.status,
+    connected: client.status === "connected",
+    qrBase64: client.qrBase64,
+    lastUpdate: client.lastUpdate
+  };
 }
 
-async function reconnectWhatsApp() {
-  try {
-    await resetWhatsAppAuth();
-    
-    setTimeout(async () => {
-      console.log("Reiniciando WhatsApp...");
-      await startWhatsApp();
-    }, 1000);
-    
-    return { message: "Reconectando... QR code aparecerá em breve." };
-  } catch (error) {
-    console.error("Erro ao reconectar:", error);
-    throw error;
+function getStatus(clientId = "default") {
+  const client = getOrCreateClientState(clientId);
+
+  return {
+    clientId,
+    status: client.status,
+    connected: client.status === "connected",
+    qrAvailable: Boolean(client.qrBase64),
+    lastUpdate: client.lastUpdate
+  };
+}
+
+function getSocket(clientId = "default") {
+  const client = getOrCreateClientState(clientId);
+  return client.socket;
+}
+
+async function resetWhatsAppAuth(clientId = "default") {
+  const client = getOrCreateClientState(clientId);
+  const authDir = getClientAuthDir(clientId);
+
+  if (client.socket) {
+    client.socket.end();
+    client.socket = null;
   }
+
+  if (await fs.stat(authDir).catch(() => null)) {
+    await fs.rm(authDir, { recursive: true, force: true });
+  }
+
+  atualizarStatus(clientId, "disconnected");
+  client.qrBase64 = null;
+
+  return { message: `Autenticação resetada para cliente ${clientId}.` };
+}
+
+async function reconnectWhatsApp(clientId = "default") {
+  await resetWhatsAppAuth(clientId);
+  await createSocket(clientId);
+
+  return { message: `Reconectando cliente ${clientId}. QR code será gerado em instantes.` };
 }
 
 module.exports = {
   startWhatsApp,
   getSocket,
+  gerarQRCode,
+  enviarQRCodeFrontend,
+  atualizarStatus,
+  getStatus,
   resetWhatsAppAuth,
   reconnectWhatsApp
 };

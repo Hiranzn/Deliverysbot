@@ -3,7 +3,7 @@ const cors = require("cors");
 const authRoutes = require("./routes/authRoutes");
 const ordersRoutes = require("./routes/ordersRoutes");
 const analyticsRoutes = require("./routes/analyticsRoutes");
-const { reconnectWhatsApp } = require("./services/whatsappService");
+const whatsappRoutes = require("./routes/whatsappRoutes");
 
 const app = express();
 
@@ -14,18 +14,10 @@ app.get("/", (req, res) => {
   res.json({ message: "API de pedidos funcionando" });
 });
 
-app.post("/whatsapp/reconnect", async (req, res, next) => {
-  try {
-    const result = await reconnectWhatsApp();
-    res.status(200).json(result);
-  } catch (error) {
-    next(error);
-  }
-});
-
 app.use("/auth", authRoutes);
 app.use("/orders", ordersRoutes);
 app.use("/analytics", analyticsRoutes);
+app.use("/whatsapp", whatsappRoutes);
 
 app.use((err, req, res, next) => {
   console.error(err);
