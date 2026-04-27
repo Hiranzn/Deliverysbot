@@ -4,6 +4,7 @@ import Login from './pages/Login';
 import ActiveOrders from './pages/ActiveOrders';
 import OrderHistory from './pages/OrderHistory';
 import Analytics from './pages/Analytics';
+import ConnectWhatsApp from './pages/ConnectWhatsApp';
 
 function App() {
   const [currentPage, setCurrentPage] = useState('active');
@@ -51,6 +52,12 @@ function App() {
               Análises
             </button>
             <button
+              onClick={() => setCurrentPage('whatsapp')}
+              className={currentPage === 'whatsapp' ? 'nav-button active' : 'nav-button'}
+            >
+              Conectar WhatsApp
+            </button>
+            <button
               onClick={handleLogout}
               className="nav-button logout"
             >
@@ -64,6 +71,7 @@ function App() {
         {currentPage === 'active' && <ActiveOrders />}
         {currentPage === 'history' && <OrderHistory />}
         {currentPage === 'analytics' && <Analytics />}
+        {currentPage === 'whatsapp' && <ConnectWhatsApp />}
       </main>
     </div>
   );
