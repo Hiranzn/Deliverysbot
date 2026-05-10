@@ -21,7 +21,9 @@ function authMiddleware(req, res, next) {
       id: payload.id,
       role: payload.role || "user",
       isMaster: payload.role === "master",
-      restaurantId: payload.restaurantId ?? null
+      storeId: payload.storeId ?? payload.restaurantId ?? payload.companyId ?? null,
+      companyId: payload.companyId ?? payload.storeId ?? payload.restaurantId ?? null,
+      restaurantId: payload.restaurantId ?? payload.storeId ?? payload.companyId ?? null
     };
 
     next();

@@ -3,6 +3,7 @@ function mapIncomingOrder(payload) {
 
   return {
     pedidoId: payload.pedido_id,
+    storeId: payload.storeId ?? payload.store_id ?? payload.companyId ?? payload.company_id ?? payload.restaurantId ?? payload.restaurant_id ?? null,
     source: payload.canal || "whatsapp",
     cliente: {
       nome: payload?.cliente?.nome,

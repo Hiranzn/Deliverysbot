@@ -1,5 +1,6 @@
 const pool = require("../config/db");
 const { mapIncomingOrder } = require("../utils/orderMapper");
+const { getStoreScopeId, normalizeStoreScopeId } = require("../utils/tenantScope");
 
 function createHttpError(message, statusCode = 400) {
   const error = new Error(message);
@@ -58,12 +59,12 @@ function validarPayload(payload) {
   }
 }
 
-async function getDefaultStoreId(client) {
+async function getSingleAvailableStoreId(client) {
   const result = await client.query(`
     SELECT id
     FROM stores
-    ORDER BY created_at ASC
-    LIMIT 1
+    ORDER BY created_at ASC, id ASC
+    LIMIT 2
   `);
 
   if (result.rows.length === 0) {
@@ -73,7 +74,48 @@ async function getDefaultStoreId(client) {
     );
   }
 
+  if (result.rows.length > 1) {
+    throw createHttpError(
+      "storeId é obrigatório quando existe mais de uma loja cadastrada.",
+      409
+    );
+  }
+
   return result.rows[0].id;
+}
+
+async function storeExists(client, storeId) {
+  const result = await client.query(
+    `
+    SELECT id
+    FROM stores
+    WHERE id::text = $1::text
+    LIMIT 1
+    `,
+    [storeId]
+  );
+
+  return result.rows.length > 0;
+}
+
+async function resolveStoreId(client, payload, scope = {}) {
+  const scopedStoreId = getStoreScopeId(scope);
+  const requestedStoreId = normalizeStoreScopeId(
+    scopedStoreId ?? payload.storeId,
+    null
+  );
+
+  if (!requestedStoreId) {
+    return getSingleAvailableStoreId(client);
+  }
+
+  const exists = await storeExists(client, requestedStoreId);
+
+  if (!exists) {
+    throw createHttpError("Loja informada não foi encontrada", 404);
+  }
+
+  return requestedStoreId;
 }
 
 async function createOrUpdateCustomer(client, cliente) {
@@ -141,7 +183,7 @@ async function createAddress(client, customerId, endereco) {
   return addressResult.rows[0].id;
 }
 
-async function createOrder(payload) {
+async function createOrder(payload, scope = {}) {
   validarPayload(payload);
 
   const data = mapIncomingOrder(payload);
@@ -164,7 +206,7 @@ async function createOrder(payload) {
   try {
     await client.query("BEGIN");
 
-    const storeId = await getDefaultStoreId(client);
+    const storeId = await resolveStoreId(client, data, scope);
     const customerId = await createOrUpdateCustomer(client, data.cliente);
     const addressId = await createAddress(client, customerId, data.endereco);
 
@@ -319,7 +361,7 @@ async function getOrders(restaurantId, isMaster = false) {
 
   const result = isMaster
     ? await pool.query(baseQuery)
-    : await pool.query(`${baseQuery.replace("GROUP BY", "WHERE o.store_id = $1\n    GROUP BY")}`, [restaurantId]);
+    : await pool.query(`${baseQuery.replace("GROUP BY", "WHERE o.store_id::text = $1::text\n    GROUP BY")}`, [restaurantId]);
 
   return result.rows;
 }
@@ -357,7 +399,7 @@ async function updateOrderStatus(orderId, status, restaurantId, isMaster = false
 
   const result = isMaster
     ? await pool.query(query, [status, orderId])
-    : await pool.query(`${query.replace("RETURNING", "      AND store_id = $3\n    RETURNING")}`, [status, orderId, restaurantId]);
+    : await pool.query(`${query.replace("RETURNING", "      AND store_id::text = $3::text\n    RETURNING")}`, [status, orderId, restaurantId]);
 
   if (result.rows.length === 0) {
     throw createHttpError("Pedido não encontrado", 404);
@@ -419,7 +461,7 @@ async function getOrderHistory(restaurantId, isMaster = false) {
 
   const result = isMaster
     ? await pool.query(baseQuery)
-    : await pool.query(`${baseQuery.replace("GROUP BY", "      AND o.store_id = $1\n    GROUP BY")}`, [restaurantId]);
+    : await pool.query(`${baseQuery.replace("GROUP BY", "      AND o.store_id::text = $1::text\n    GROUP BY")}`, [restaurantId]);
 
   return result.rows;
 }
@@ -441,7 +483,7 @@ async function deleteOrder(orderId, restaurantId, isMaster = false) {
 
   const result = isMaster
     ? await pool.query(query, [orderId])
-    : await pool.query(`${query.replace("RETURNING", "      AND store_id = $2\n    RETURNING")}`, [orderId, restaurantId]);
+    : await pool.query(`${query.replace("RETURNING", "      AND store_id::text = $2::text\n    RETURNING")}`, [orderId, restaurantId]);
 
   if (result.rows.length === 0) {
     throw createHttpError("Pedido não encontrado", 404);

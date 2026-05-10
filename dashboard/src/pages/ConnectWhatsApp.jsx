@@ -1,15 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { getWhatsAppQr, getWhatsAppStatus } from '../api/whatsappApi';
+import { getCurrentUser } from '../api/authApi';
+import { getWhatsAppStatus, reconnectWhatsApp } from '../api/whatsappApi';
 
 const POLLING_INTERVAL = 3000;
 
 function ConnectWhatsApp() {
-  const [companyId, setCompanyId] = useState('default');
-  const [status, setStatus] = useState('disconnected');
+  const [status, setStatus] = useState('desconhecido');
   const [qrBase64, setQrBase64] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [resolvedStoreId, setResolvedStoreId] = useState('');
   const pollRef = useRef(null);
+  const currentUser = getCurrentUser();
 
   const clearPolling = () => {
     if (pollRef.current) {
@@ -18,41 +20,47 @@ function ConnectWhatsApp() {
     }
   };
 
-  const fetchStatus = async (selectedCompanyId) => {
-    const data = await getWhatsAppStatus(selectedCompanyId);
-    setStatus(data.status);
-
-    if (data.connected) {
-      setQrBase64(null);
-      clearPolling();
+  const getStoreScope = () => {
+    if (currentUser?.role === 'master') {
+      return null;
     }
+
+    return currentUser?.storeId || currentUser?.companyId || currentUser?.restaurantId || null;
+  };
+
+  const applyStatus = (data) => {
+    setStatus(data.status || 'desconhecido');
+    setResolvedStoreId(data.storeId || data.companyId || data.restaurantId || '');
+    setQrBase64(data.qrBase64 || null);
+  };
+
+  const fetchStatus = async () => {
+    const data = await getWhatsAppStatus(getStoreScope());
+    applyStatus(data);
+    setError('');
+    return data;
+  };
+
+  const startPolling = () => {
+    clearPolling();
+    pollRef.current = setInterval(async () => {
+      try {
+        await fetchStatus();
+      } catch (pollError) {
+        setError('Falha ao atualizar status do WhatsApp.');
+      }
+    }, POLLING_INTERVAL);
   };
 
   const handleConnect = async () => {
-    const normalizedCompanyId = companyId.trim() || 'default';
-
     setLoading(true);
     setError('');
+    setQrBase64(null);
 
     try {
-      const data = await getWhatsAppQr(normalizedCompanyId);
-      setStatus(data.status);
-      setQrBase64(data.qrBase64 || null);
-
-      clearPolling();
-      pollRef.current = setInterval(async () => {
-        try {
-          await fetchStatus(normalizedCompanyId);
-          const qrData = await getWhatsAppQr(normalizedCompanyId);
-          if (qrData.qrBase64) {
-            setQrBase64(qrData.qrBase64);
-          }
-          setStatus(qrData.status);
-        } catch (pollError) {
-          clearPolling();
-          setError('Falha ao atualizar status do WhatsApp.');
-        }
-      }, POLLING_INTERVAL);
+      await reconnectWhatsApp(getStoreScope());
+      await fetchStatus();
+      startPolling();
     } catch (requestError) {
       setError('Não foi possível iniciar conexão do WhatsApp.');
     } finally {
@@ -61,25 +69,42 @@ function ConnectWhatsApp() {
   };
 
   useEffect(() => {
+    fetchStatus().catch(() => {
+      setError('Não foi possível carregar o status atual do WhatsApp.');
+    });
+
+    startPolling();
+
     return () => {
       clearPolling();
     };
   }, []);
+
+  const companyLabel =
+    resolvedStoreId ||
+    currentUser?.storeId ||
+    currentUser?.companyId ||
+    currentUser?.restaurantId ||
+    (currentUser?.role === 'master' ? 'default' : 'não vinculado');
+
+  const buttonLabel = loading
+    ? 'Conectando...'
+    : status === 'connected'
+      ? 'Gerar novo QR Code'
+      : 'Conectar';
 
   return (
     <section className="page-content">
       <h1>Conectar WhatsApp</h1>
       <p>Conecte sua conta do WhatsApp via QR Code sem precisar abrir o terminal.</p>
 
+      <p>
+        <strong>Identificador conectado:</strong> {companyLabel}
+      </p>
+
       <div className="whatsapp-connect-controls">
-        <input
-          type="text"
-          value={companyId}
-          onChange={(event) => setCompanyId(event.target.value)}
-          placeholder="ID da empresa (ex: 1)"
-        />
         <button className="button button-primary" onClick={handleConnect} disabled={loading}>
-          {loading ? 'Conectando...' : 'Conectar'}
+          {buttonLabel}
         </button>
       </div>
 
